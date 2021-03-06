@@ -101,3 +101,16 @@ This rule is enabled by default. The rule can be configured in the repository se
 reviewerToAssignee:
   enabled: true
 ```
+
+## Developer information
+
+### Generate code coverate report
+
+1. Install the [Run Coverlet Report extension](https://marketplace.visualstudio.com/items?itemName=ChrisDexter.RunCoverletReport) to Visual Studio
+2. Install the ReportGenerator global tool
+
+```
+    dotnet tool install -g dotnet-reportgenerator-globaltool
+```
+
+3. Use Tools/Run Code Coverage to generate a report
