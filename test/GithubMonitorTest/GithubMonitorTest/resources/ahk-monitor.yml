@@ -1,0 +1,11 @@
+﻿enabled: true
+branchProtection:
+  enabled: true
+commentProtection:
+  enabled: true
+  warningText: "comment protection warning"
+multiplePRProtection:
+  enabled: true
+  warningText: "multiple PR protection warning"
+reviewerToAssignee:
+  enabled: true

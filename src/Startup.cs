@@ -1,9 +1,11 @@
 ﻿using System;
+using System.Runtime.CompilerServices;
 using Microsoft.Azure.Functions.Extensions.DependencyInjection;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
 [assembly: FunctionsStartup(typeof(Ahk.GitHub.Monitor.Startup))]
+[assembly: InternalsVisibleTo("GithubMonitorTest")]
 
 namespace Ahk.GitHub.Monitor
 {

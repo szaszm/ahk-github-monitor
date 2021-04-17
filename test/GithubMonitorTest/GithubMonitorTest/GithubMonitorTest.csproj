@@ -26,6 +26,9 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="resources\ahk-monitor.yml">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="resources\branch_create.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

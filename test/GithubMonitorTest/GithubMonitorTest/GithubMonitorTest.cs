@@ -2,18 +2,22 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Reflection.Metadata;
 using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using Ahk.GitHub.Monitor;
+using Ahk.GitHub.Monitor.EventHandlers;
 using Ahk.GitHub.Monitor.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 using Moq;
+using Octokit;
 
 namespace GithubMonitorTest
 {
@@ -25,14 +29,42 @@ namespace GithubMonitorTest
         }
     }
 
+    class TestHandler : IGitHubEventHandler
+    {
+        public async Task<EventHandlerResult> Execute(string requestBody)
+        {
+            return EventHandlerResult.ActionPerformed("Test");
+        }
+    }
+
+    class Test2Handler : IGitHubEventHandler
+    {
+        public async Task<EventHandlerResult> Execute(string requestBody)
+        {
+            return new EventHandlerResult(requestBody);
+        }
+    }
+
+
     [TestClass]
     public class GithubMonitorTest
     {
         private const string AppId = "appid";
         private const string PrivateKey = "privatekey";
         private const string WebhookSecret = "webhooksecret";
+        private const long InstallationId = 9988776;
+        private const long RepositoryId = 339316008;
 
         private readonly ILogger logger = NullLoggerFactory.Instance.CreateLogger("null logger");
+
+        private readonly Mock<IGitHubClientFactory> githubClientFactory = new Mock<IGitHubClientFactory>();
+        private readonly Mock<IGitHubClient> githubClient = new Mock<IGitHubClient>();
+
+        public GithubMonitorTest()
+        {
+            githubClientFactory.Setup(x => x.CreateGitHubClient(InstallationId))
+                .ReturnsAsync(githubClient.Object);
+        }
 
         private IOptions<GitHubMonitorConfig> GetConfig(string appId = AppId, string privateKey = PrivateKey, string webhookSecret = WebhookSecret)
         {
@@ -44,7 +76,7 @@ namespace GithubMonitorTest
             });
         }
 
-        private string SignPayload(byte[] payload)
+        private static string SignPayload(byte[] payload)
         {
             var hmacsha1 = new HMACSHA1(Encoding.ASCII.GetBytes(WebhookSecret));
             var binarySignature = hmacsha1.ComputeHash(payload);
@@ -52,7 +84,7 @@ namespace GithubMonitorTest
             return "sha1=" + hexString;
         }
 
-        private static void ParseRequestFile(string content, HttpRequest request)
+        private static void ParseRequestFile(string content, HttpRequest request, bool sign = true)
         {
             content = content.Replace("\r\n", "\n");
             var headerSeparatorIndex = content.IndexOf("\n\n", StringComparison.Ordinal);
@@ -67,10 +99,29 @@ namespace GithubMonitorTest
 
             var body = content.Substring(headerSeparatorIndex + "\n\n".Length);
             request.ContentLength = body.Length;
-            request.Body = new MemoryStream(Encoding.UTF8.GetBytes(body));
+            var buffer = Encoding.UTF8.GetBytes(body);
+            request.Body = new MemoryStream(buffer);
+            if (sign)
+            {
+                request.Headers["X-Hub-Signature"] = SignPayload(buffer);
+            }
 
             request.Method = headers["Request method"];
             request.ContentType = headers["content-type"];
+        }
+
+        private void setupAhkMonitor()
+        {
+            var ahkMonitorPath = Path.Combine(Directory.GetCurrentDirectory(), @"ahk-monitor.yml");
+            if (File.Exists(ahkMonitorPath))
+            {
+                var contentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(File.ReadAllText(ahkMonitorPath)));
+                githubClient.Setup(x =>
+                        x.Repository.Content.GetAllContentsByRef(RepositoryId, ".github/ahk-monitor.yml",
+                            It.IsAny<string>()))
+                    .ReturnsAsync(new List<RepositoryContent>
+                        {new RepositoryContent("", "", "", 0, ContentType.File, "", "", "", "", "", contentBase64, "", "") });
+            }
         }
 
         [TestMethod]
@@ -114,7 +165,7 @@ namespace GithubMonitorTest
             var fileContent =
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(),
                     @"invalid_signature_rejected.txt"));
-            ParseRequestFile(fileContent, request);
+            ParseRequestFile(fileContent, request, false);
 
             var response = (ObjectResult) await function.Run(request, logger);
 
@@ -133,7 +184,7 @@ namespace GithubMonitorTest
             var fileContent =
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(),
                     @"valid_signature_accepted.txt"));
-            ParseRequestFile(fileContent, request);
+            ParseRequestFile(fileContent, request, false);
             var contentBytes = new byte[request.Body.Length];
             await request.Body.ReadAsync(contentBytes, 0, contentBytes.Length);
             request.Body.Seek(0, SeekOrigin.Begin);
@@ -157,7 +208,7 @@ namespace GithubMonitorTest
             var fileContent =
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(),
                     @"valid_signature_accepted.txt"));
-            ParseRequestFile(fileContent, request);
+            ParseRequestFile(fileContent, request, false);
 
             var response = (ObjectResult)await function.Run(request, logger);
 
@@ -166,6 +217,102 @@ namespace GithubMonitorTest
             var messages = messagesField?.GetValue(response.Value) as List<string>;
             Assert.IsNotNull(messages);
             Assert.IsTrue(messages.First().Contains("test exception"));
+        }
+
+        [TestMethod]
+        public async Task EventDispatchServiceTest()
+        {
+            var sc = new ServiceCollection();
+            sc.AddSingleton<TestHandler>();
+            sc.AddSingleton<Test2Handler>();
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                    .Add<TestHandler>("invoke_test")
+                    .Add<Test2Handler>("test2");
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+
+            var result1 = new WebhookResult();
+            await dispatcher.Process("invoke_test", string.Empty, result1);
+            var result2 = new WebhookResult();
+            await dispatcher.Process("test2", "test request body", result2);
+
+            Assert.IsTrue(result1.Messages.First().Contains("Test"));
+            Assert.IsTrue(result2.Messages.First().Contains("test request body"));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/pr_opened.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task PrOpenedNoDuplicates()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new PullRequestOpenDuplicateHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<PullRequestOpenDuplicateHandler>(PullRequestOpenDuplicateHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"pr_opened.txt")), request);
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008)).ReturnsAsync(new List<PullRequest>().AsReadOnly());
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008, It.IsAny<PullRequestRequest>())).ReturnsAsync(new List<PullRequest>().AsReadOnly());
+            setupAhkMonitor();
+
+            var response = (ObjectResult) await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            Assert.IsTrue(webhookResult.Messages.Any(m => m.Equals("PullRequestOpenDuplicateHandler -> no action needed: pull request open is ok, there are no other PRs")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/pr_opened.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task PrOpenedWithDuplicates()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new PullRequestOpenDuplicateHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<PullRequestOpenDuplicateHandler>(PullRequestOpenDuplicateHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"pr_opened.txt")), request);
+            var prs = new List<PullRequest>()
+            {
+                new PullRequest(5748988117, "", "", "", "", "", "", "", 1, ItemState.Open, "", "", DateTimeOffset.Now,
+                    DateTimeOffset.Now, null, null, new GitReference(), new GitReference(), new User(), new User(),
+                    new List<User>().AsReadOnly(), false, true, MergeableState.Clean, null, "", 0, 0, 0, 0, 0,
+                    new Milestone(), false, true, new List<User>().AsReadOnly(), new List<Team>().AsReadOnly(),
+                    new List<Label>().AsReadOnly()),
+                new PullRequest(5748988118, "", "", "", "", "", "", "", 2, ItemState.Open, "", "", DateTimeOffset.Now,
+                    DateTimeOffset.Now, null, null, new GitReference(), new GitReference(), new User(), new User(),
+                    new List<User>().AsReadOnly(), false, true, MergeableState.Clean, null, "", 0, 0, 0, 0, 0,
+                    new Milestone(), false, true, new List<User>().AsReadOnly(), new List<Team>().AsReadOnly(),
+                    new List<Label>().AsReadOnly())
+            }.AsReadOnly();
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008)).ReturnsAsync(prs);
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008, It.IsAny<PullRequestRequest>())).ReturnsAsync(prs);
+            githubClient.Setup(x =>
+                x.Issue.Comment.Create(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>())).Verifiable();
+            setupAhkMonitor();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            githubClient.Verify(x => x.Issue.Comment.Create(RepositoryId, 1, "multiple PR protection warning"), Times.Never);
+            githubClient.Verify(x => x.Issue.Comment.Create(RepositoryId, 2, "multiple PR protection warning"), Times.Once);
+            Assert.IsTrue(webhookResult.Messages.Any(m => m.Equals("PullRequestOpenDuplicateHandler -> action performed: pull request open handled with multiple open PRs; pull request open is ok, there are no other closed PRs")));
         }
     }
 }
