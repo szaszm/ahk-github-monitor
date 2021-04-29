@@ -110,18 +110,18 @@ namespace GithubMonitorTest
             request.ContentType = headers["content-type"];
         }
 
-        private void setupAhkMonitor()
+        private void setupAhkMonitorYml()
         {
             var ahkMonitorPath = Path.Combine(Directory.GetCurrentDirectory(), @"ahk-monitor.yml");
-            if (File.Exists(ahkMonitorPath))
-            {
-                var contentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(File.ReadAllText(ahkMonitorPath)));
-                githubClient.Setup(x =>
-                        x.Repository.Content.GetAllContentsByRef(RepositoryId, ".github/ahk-monitor.yml",
-                            It.IsAny<string>()))
-                    .ReturnsAsync(new List<RepositoryContent>
-                        {new RepositoryContent("", "", "", 0, ContentType.File, "", "", "", "", "", contentBase64, "", "") });
-            }
+            Assert.IsTrue(File.Exists(ahkMonitorPath));
+            var contentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(File.ReadAllText(ahkMonitorPath)));
+            githubClient.Setup(x =>
+                    x.Repository.Content.GetAllContentsByRef(RepositoryId, ".github/ahk-monitor.yml",
+                        It.IsAny<string>()))
+                .ReturnsAsync(new List<RepositoryContent>
+                {
+                    new RepositoryContent("", "", "", 0, ContentType.File, "", "", "", "", "", contentBase64, "", "")
+                });
         }
 
         [TestMethod]
@@ -256,9 +256,9 @@ namespace GithubMonitorTest
             var function = new GitHubMonitorFunction(dispatcher, GetConfig());
             ParseRequestFile(
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"pr_opened.txt")), request);
-            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008)).ReturnsAsync(new List<PullRequest>().AsReadOnly());
-            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008, It.IsAny<PullRequestRequest>())).ReturnsAsync(new List<PullRequest>().AsReadOnly());
-            setupAhkMonitor();
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(RepositoryId)).ReturnsAsync(new List<PullRequest>().AsReadOnly());
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(RepositoryId, It.IsAny<PullRequestRequest>())).ReturnsAsync(new List<PullRequest>().AsReadOnly());
+            setupAhkMonitorYml();
 
             var response = (ObjectResult) await function.Run(request, logger);
 
@@ -298,11 +298,11 @@ namespace GithubMonitorTest
                     new Milestone(), false, true, new List<User>().AsReadOnly(), new List<Team>().AsReadOnly(),
                     new List<Label>().AsReadOnly())
             }.AsReadOnly();
-            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008)).ReturnsAsync(prs);
-            githubClient.Setup(x => x.PullRequest.GetAllForRepository(339316008, It.IsAny<PullRequestRequest>())).ReturnsAsync(prs);
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(RepositoryId)).ReturnsAsync(prs);
+            githubClient.Setup(x => x.PullRequest.GetAllForRepository(RepositoryId, It.IsAny<PullRequestRequest>())).ReturnsAsync(prs);
             githubClient.Setup(x =>
                 x.Issue.Comment.Create(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>())).Verifiable();
-            setupAhkMonitor();
+            setupAhkMonitorYml();
 
             var response = (ObjectResult)await function.Run(request, logger);
 
@@ -313,6 +313,152 @@ namespace GithubMonitorTest
             githubClient.Verify(x => x.Issue.Comment.Create(RepositoryId, 1, "multiple PR protection warning"), Times.Never);
             githubClient.Verify(x => x.Issue.Comment.Create(RepositoryId, 2, "multiple PR protection warning"), Times.Once);
             Assert.IsTrue(webhookResult.Messages.Any(m => m.Equals("PullRequestOpenDuplicateHandler -> action performed: pull request open handled with multiple open PRs; pull request open is ok, there are no other closed PRs")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/branch_create.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task BranchCreate()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new BranchProtectionRuleHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<BranchProtectionRuleHandler>(BranchProtectionRuleHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"branch_create.txt")), request);
+            githubClient.Setup(x =>
+                    x.Repository.Branch.UpdateBranchProtection(RepositoryId, "master",
+                        It.IsAny<BranchProtectionSettingsUpdate>()))
+                .Verifiable();
+            setupAhkMonitorYml();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            githubClient.Verify(x => x.Repository.Branch.UpdateBranchProtection(RepositoryId, "master", It.IsAny<BranchProtectionSettingsUpdate>()), Times.Once);
+            Assert.IsTrue(webhookResult.Messages.Any(m => m.Equals("BranchProtectionRuleHandler -> action performed: branch protection rule applied")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/comment_delete.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task CommentDelete()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new IssueCommentEditDeleteHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<IssueCommentEditDeleteHandler>(IssueCommentEditDeleteHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_delete.txt")), request);
+            githubClient.Setup(x => x.Issue.Comment.Create(RepositoryId, 1, "comment protection warning")).Verifiable();
+            setupAhkMonitorYml();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            githubClient.Verify(x => x.Issue.Comment.Create(RepositoryId, 1, "comment protection warning"), Times.Once);
+            Assert.IsTrue(webhookResult.Messages.Any(m => m.Equals("IssueCommentEditDeleteHandler -> action performed: comment action resulting in warning")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/comment_delete_own.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task CommentDeleteOwn()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new IssueCommentEditDeleteHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<IssueCommentEditDeleteHandler>(IssueCommentEditDeleteHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_delete_own.txt")), request);
+            setupAhkMonitorYml();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            Assert.IsTrue(webhookResult.Messages.Any(m =>
+                m.Equals("IssueCommentEditDeleteHandler -> no action needed: comment action deleted by abcabc allowed, referencing own comment")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/comment_edited.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task CommentEdited()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new IssueCommentEditDeleteHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<IssueCommentEditDeleteHandler>(IssueCommentEditDeleteHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_edited.txt")), request);
+            githubClient.Setup(x => x.Issue.Comment.Create(RepositoryId, 1, "comment protection warning")).Verifiable();
+            setupAhkMonitorYml();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            githubClient.Verify(x => x.Issue.Comment.Create(RepositoryId, 1, "comment protection warning"), Times.Once);
+            Assert.IsTrue(webhookResult.Messages.Any(m => m.Equals("IssueCommentEditDeleteHandler -> action performed: comment action resulting in warning")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/comment_edited_own.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task CommentEditedOwn()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new IssueCommentEditDeleteHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<IssueCommentEditDeleteHandler>(IssueCommentEditDeleteHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_edited_own.txt")), request);
+            setupAhkMonitorYml();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            Assert.IsTrue(webhookResult.Messages.Any(m =>
+                m.Equals("IssueCommentEditDeleteHandler -> no action needed: comment action edited by abcabc allowed, referencing own comment")));
         }
     }
 }
