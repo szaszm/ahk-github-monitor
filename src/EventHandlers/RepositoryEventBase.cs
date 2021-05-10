@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Ahk.GitHub.Monitor.Services;
 using Octokit;
@@ -23,11 +24,11 @@ namespace Ahk.GitHub.Monitor.EventHandlers
 
         public async Task<EventHandlerResult> Execute(string requestBody)
         {
-            if (!tryParsePayload(requestBody, out var webhookPayload, out var errorResult))
+            if (!tryParsePayload(requestBody, out var webhookPayload, out var errorResult, out var organizationLogin))
                 return errorResult;
 
             GitHubClient = await gitHubClientFactory.CreateGitHubClient(webhookPayload.Installation.Id);
-            var (repoSettings, repoSettingsErrorResult) = await tryGetRepositorySettings(webhookPayload);
+            var (repoSettings, repoSettingsErrorResult) = await tryGetRepositorySettings(webhookPayload, organizationLogin);
 
             if (repoSettings == null)
                 return repoSettingsErrorResult;
@@ -40,9 +41,10 @@ namespace Ahk.GitHub.Monitor.EventHandlers
 
         protected abstract Task<EventHandlerResult> execute(TPayload webhookPayload, RepositorySettings repoSettings);
 
-        protected bool tryParsePayload(string requestBody, out TPayload payload, out EventHandlerResult errorResult)
+        protected bool tryParsePayload(string requestBody, out TPayload payload, out EventHandlerResult errorResult, out string organizationLogin)
         {
             payload = null;
+            organizationLogin = null;
             if (string.IsNullOrEmpty(requestBody))
             {
                 errorResult = EventHandlerResult.PayloadError("request body was empty");
@@ -71,6 +73,17 @@ namespace Ahk.GitHub.Monitor.EventHandlers
                 return false;
             }
 
+            try
+            {
+                var jsonobj = JsonDocument.Parse(requestBody);
+                organizationLogin = jsonobj.RootElement.GetProperty("organization").GetProperty("login").GetString();
+            }
+            catch (Exception)
+            {
+                errorResult = EventHandlerResult.PayloadError($"no organization info in webhook payload");
+                return false;
+            }
+
             errorResult = null;
             return true;
         }
@@ -81,11 +94,15 @@ namespace Ahk.GitHub.Monitor.EventHandlers
                     .IgnoreUnmatchedProperties()
                     .Build();
 
-        private async Task<(RepositorySettings, EventHandlerResult)> tryGetRepositorySettings(TPayload webhookPayload)
+        private async Task<(RepositorySettings, EventHandlerResult)> tryGetRepositorySettings(TPayload webhookPayload, string organizationLogin)
         {
             try
             {
-                var contents = await GitHubClient.Repository.Content.GetAllContentsByRef(webhookPayload.Repository.Id, ".github/ahk-monitor.yml", webhookPayload.Repository.DefaultBranch);
+                var contents =
+                    await GitHubClient.Repository.Content.GetAllContents(organizationLogin, "ahk-monitor-config",
+                        "ahk-monitor.yml")
+                    ?? await GitHubClient.Repository.Content.GetAllContentsByRef(webhookPayload.Repository.Id,
+                        ".github/ahk-monitor.yml", webhookPayload.Repository.DefaultBranch);
                 var settingsString = contents?.FirstOrDefault()?.Content;
 
                 if (settingsString == null)

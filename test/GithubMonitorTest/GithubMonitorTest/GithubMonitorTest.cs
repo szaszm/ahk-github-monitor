@@ -52,6 +52,7 @@ namespace GithubMonitorTest
         private const string AppId = "appid";
         private const string PrivateKey = "privatekey";
         private const string WebhookSecret = "webhooksecret";
+        private const string OrganizationLogin = "aabbcc";
         private const long InstallationId = 9988776;
         private const long RepositoryId = 339316008;
 
@@ -110,18 +111,28 @@ namespace GithubMonitorTest
             request.ContentType = headers["content-type"];
         }
 
-        private void setupAhkMonitorYml()
+        private void SetupAhkMonitorYml(bool orgPrivateRepo = true)
         {
             var ahkMonitorPath = Path.Combine(Directory.GetCurrentDirectory(), @"ahk-monitor.yml");
             Assert.IsTrue(File.Exists(ahkMonitorPath));
             var contentBase64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(File.ReadAllText(ahkMonitorPath)));
-            githubClient.Setup(x =>
-                    x.Repository.Content.GetAllContentsByRef(RepositoryId, ".github/ahk-monitor.yml",
-                        It.IsAny<string>()))
-                .ReturnsAsync(new List<RepositoryContent>
-                {
-                    new RepositoryContent("", "", "", 0, ContentType.File, "", "", "", "", "", contentBase64, "", "")
-                });
+            var contents = new List<RepositoryContent>
+            {
+                new RepositoryContent("", "", "", 0, ContentType.File, "", "", "", "", "", contentBase64, "",
+                    "")
+            };
+            if (orgPrivateRepo)
+            {
+                githubClient
+                    .Setup(x => x.Repository.Content.GetAllContents(OrganizationLogin, "ahk-monitor-config",
+                        "ahk-monitor.yml")).ReturnsAsync(contents);
+            }
+            else
+            {
+                githubClient
+                    .Setup(x => x.Repository.Content.GetAllContentsByRef(RepositoryId, ".github/ahk-monitor.yml",
+                        It.IsAny<string>())).ReturnsAsync(contents);
+            }
         }
 
         [TestMethod]
@@ -258,7 +269,7 @@ namespace GithubMonitorTest
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"pr_opened.txt")), request);
             githubClient.Setup(x => x.PullRequest.GetAllForRepository(RepositoryId)).ReturnsAsync(new List<PullRequest>().AsReadOnly());
             githubClient.Setup(x => x.PullRequest.GetAllForRepository(RepositoryId, It.IsAny<PullRequestRequest>())).ReturnsAsync(new List<PullRequest>().AsReadOnly());
-            setupAhkMonitorYml();
+            SetupAhkMonitorYml();
 
             var response = (ObjectResult) await function.Run(request, logger);
 
@@ -302,7 +313,7 @@ namespace GithubMonitorTest
             githubClient.Setup(x => x.PullRequest.GetAllForRepository(RepositoryId, It.IsAny<PullRequestRequest>())).ReturnsAsync(prs);
             githubClient.Setup(x =>
                 x.Issue.Comment.Create(It.IsAny<int>(), It.IsAny<int>(), It.IsAny<string>())).Verifiable();
-            setupAhkMonitorYml();
+            SetupAhkMonitorYml(false);
 
             var response = (ObjectResult)await function.Run(request, logger);
 
@@ -335,7 +346,7 @@ namespace GithubMonitorTest
                     x.Repository.Branch.UpdateBranchProtection(RepositoryId, "master",
                         It.IsAny<BranchProtectionSettingsUpdate>()))
                 .Verifiable();
-            setupAhkMonitorYml();
+            SetupAhkMonitorYml();
 
             var response = (ObjectResult)await function.Run(request, logger);
 
@@ -364,7 +375,7 @@ namespace GithubMonitorTest
             ParseRequestFile(
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_delete.txt")), request);
             githubClient.Setup(x => x.Issue.Comment.Create(RepositoryId, 1, "comment protection warning")).Verifiable();
-            setupAhkMonitorYml();
+            SetupAhkMonitorYml(false);
 
             var response = (ObjectResult)await function.Run(request, logger);
 
@@ -392,7 +403,7 @@ namespace GithubMonitorTest
             var function = new GitHubMonitorFunction(dispatcher, GetConfig());
             ParseRequestFile(
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_delete_own.txt")), request);
-            setupAhkMonitorYml();
+            SetupAhkMonitorYml();
 
             var response = (ObjectResult)await function.Run(request, logger);
 
@@ -421,7 +432,7 @@ namespace GithubMonitorTest
             ParseRequestFile(
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_edited.txt")), request);
             githubClient.Setup(x => x.Issue.Comment.Create(RepositoryId, 1, "comment protection warning")).Verifiable();
-            setupAhkMonitorYml();
+            SetupAhkMonitorYml();
 
             var response = (ObjectResult)await function.Run(request, logger);
 
@@ -449,7 +460,7 @@ namespace GithubMonitorTest
             var function = new GitHubMonitorFunction(dispatcher, GetConfig());
             ParseRequestFile(
                 await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"comment_edited_own.txt")), request);
-            setupAhkMonitorYml();
+            SetupAhkMonitorYml();
 
             var response = (ObjectResult)await function.Run(request, logger);
 
