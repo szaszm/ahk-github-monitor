@@ -44,6 +44,15 @@
     <None Update="resources\comment_edited.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>
+    <None Update="resources\pr_invalid_command_rejected.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="resources\pr_merge_command_permissions_enforced.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="resources\pr_merge_command.txt">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Update="resources\valid_signature_accepted.txt">
       <CopyToOutputDirectory>Always</CopyToOutputDirectory>
     </None>

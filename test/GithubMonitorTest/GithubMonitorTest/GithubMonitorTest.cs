@@ -471,5 +471,92 @@ namespace GithubMonitorTest
             Assert.IsTrue(webhookResult.Messages.Any(m =>
                 m.Equals("IssueCommentEditDeleteHandler -> no action needed: comment action edited by abcabc allowed, referencing own comment")));
         }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/pr_merge_command.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task PrMergeCommand()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new PullRequestCommentCommandHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<PullRequestCommentCommandHandler>(PullRequestCommentCommandHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"pr_merge_command.txt")), request);
+            SetupAhkMonitorYml();
+            githubClient.Setup(x => x.PullRequest.Merge(RepositoryId, 2, It.IsAny<MergePullRequest>()))
+                .ReturnsAsync(new PullRequestMerge("sha", true, "msg"));
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            githubClient.Verify(x=>x.PullRequest.Merge(RepositoryId, 2, It.IsAny<MergePullRequest>()), Times.Once);
+            Assert.IsTrue(webhookResult.Messages.Any(m =>
+                m.Equals("PullRequestCommentCommandHandler -> action performed: merged pull request #2 pr1")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/pr_invalid_command_rejected.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task PrInvalidCommandRejected()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new PullRequestCommentCommandHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<PullRequestCommentCommandHandler>(PullRequestCommentCommandHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"pr_invalid_command_rejected.txt")), request);
+            SetupAhkMonitorYml();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            Assert.IsTrue(webhookResult.Messages.Any(m =>
+                m.Equals("PullRequestCommentCommandHandler -> no action needed: invalid command: +invalid_command_aksdjalsk")));
+        }
+
+        [TestMethod]
+        [DeploymentItem(@"resources/pr_merge_command_permissions_enforced.txt")]
+        [DeploymentItem(@"resources/ahk-monitor.yml")]
+        public async Task PrMergeCommandPermissionsEnforced()
+        {
+            var context = new DefaultHttpContext();
+            var request = context.Request;
+            var sc = new ServiceCollection();
+            sc.AddSingleton(sp => new PullRequestCommentCommandHandler(githubClientFactory.Object));
+            var serviceProvider = sc.BuildServiceProvider();
+            var builder = new EventDispatchConfigBuilder(sc)
+                .Add<PullRequestCommentCommandHandler>(PullRequestCommentCommandHandler.GitHubWebhookEventName);
+            var dispatcher = new EventDispatchService(serviceProvider, builder);
+            var function = new GitHubMonitorFunction(dispatcher, GetConfig());
+            ParseRequestFile(
+                await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), @"pr_merge_command_permissions_enforced.txt")), request);
+            SetupAhkMonitorYml();
+
+            var response = (ObjectResult)await function.Run(request, logger);
+
+            Assert.IsNotNull(response);
+            Assert.IsInstanceOfType(response, typeof(OkObjectResult));
+            var webhookResult = response.Value as WebhookResult;
+            Assert.IsNotNull(webhookResult);
+            Assert.IsTrue(webhookResult.Messages.Any(m =>
+                m.Equals("PullRequestCommentCommandHandler -> payload error: aabbcc is not allowed to execute the command: +ok")));
+        }
     }
 }

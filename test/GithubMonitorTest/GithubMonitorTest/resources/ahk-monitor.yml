@@ -9,3 +9,5 @@ multiplePRProtection:
   warningText: "multiple PR protection warning"
 reviewerToAssignee:
   enabled: true
+pullRequestCommentCommand:
+  enabled: true
